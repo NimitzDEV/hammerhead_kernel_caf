@@ -4941,7 +4941,8 @@ static inline void update_sg_lb_stats(struct lb_env *env,
 	 */
 	if (local_group) {
 		if (env->idle != CPU_NEWLY_IDLE) {
-			if (balance_cpu != env->dst_cpu) {
+			if (balance_cpu != env->dst_cpu ||
+			    cmpxchg(&group->balance_cpu, -1, balance_cpu) != -1) {
 				*balance = 0;
 				return;
 			}
@@ -6016,7 +6017,7 @@ static void rebalance_domains(struct rq *rq, enum cpu_idle_type idle)
 	int balance = 1;
 	int cpu = rq->cpu;
 	unsigned long interval;
-	struct sched_domain *sd;
+	struct sched_domain *sd, *last = NULL;
 	/* Earliest time when we have to do rebalance again */
 	unsigned long next_balance = jiffies + 60*HZ;
 	int update_next_balance = 0;
@@ -6026,6 +6027,7 @@ static void rebalance_domains(struct rq *rq, enum cpu_idle_type idle)
 
 	rcu_read_lock();
 	for_each_domain(cpu, sd) {
+		last = sd;
 		if (!(sd->flags & SD_LOAD_BALANCE))
 			continue;
 
@@ -6071,6 +6073,9 @@ out:
 		if (!balance)
 			break;
 	}
+	for (sd = last; sd; sd = sd->child)
+		(void)cmpxchg(&sd->groups->balance_cpu, cpu, -1);
+
 	rcu_read_unlock();
 
 	/*
