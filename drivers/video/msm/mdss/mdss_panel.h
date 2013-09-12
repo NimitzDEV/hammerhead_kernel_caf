@@ -259,6 +259,10 @@ struct mipi_panel_info {
 	char hw_vsync_mode;
 };
 
+struct edp_panel_info {
+	char frame_rate;	/* fps */
+};
+
 enum lvds_mode {
 	LVDS_SINGLE_CHANNEL_MODE,
 	LVDS_DUAL_CHANNEL_MODE,
@@ -344,6 +348,7 @@ struct mdss_panel_info {
 	struct fbc_panel_info fbc;
 	struct mipi_panel_info mipi;
 	struct lvds_panel_info lvds;
+	struct edp_panel_info edp;
 };
 
 struct mdss_panel_data {
@@ -383,6 +388,9 @@ static inline u32 mdss_panel_get_framerate(struct mdss_panel_info *panel_info)
 	case MIPI_VIDEO_PANEL:
 	case MIPI_CMD_PANEL:
 		frame_rate = panel_info->mipi.frame_rate;
+		break;
+	case EDP_PANEL:
+		frame_rate = panel_info->edp.frame_rate;
 		break;
 	case WRITEBACK_PANEL:
 		frame_rate = DEFAULT_FRAME_RATE;
