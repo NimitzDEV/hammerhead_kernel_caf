@@ -707,13 +707,15 @@ int mdss_mdp_cmd_stop(struct mdss_mdp_ctl *ctl)
 	memset(ctx, 0, sizeof(*ctx));
 	ctl->priv_data = NULL;
 
-	ret = mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_BLANK, NULL);
-	WARN(ret, "intf %d blank error (%d)\n", ctl->intf_num, ret);
+	if (ctl->num == 0) {
+		ret = mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_BLANK, NULL);
+		WARN(ret, "intf %d blank error (%d)\n", ctl->intf_num, ret);
 
-	ret = mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_PANEL_OFF, NULL);
-	WARN(ret, "intf %d panel off error (%d)\n", ctl->intf_num, ret);
+		ret = mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_PANEL_OFF, NULL);
+		WARN(ret, "intf %d panel off error (%d)\n", ctl->intf_num, ret);
 
-	mdss_mdp_cmd_tearcheck_setup(ctl, false);
+		mdss_mdp_cmd_tearcheck_setup(ctl, false);
+	}
 
 	ctl->stop_fnc = NULL;
 	ctl->display_fnc = NULL;
