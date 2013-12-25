@@ -1385,10 +1385,6 @@ static int __devinit mdss_dsi_panel_probe(struct platform_device *pdev)
 	if (rc)
 		return rc;
 
-	vendor_pdata.on = mdss_dsi_panel_on;
-	vendor_pdata.off = mdss_dsi_panel_off;
-	vendor_pdata.bl_fnc = mdss_dsi_panel_bl_ctrl;
-
 	partial_update_enabled = of_property_read_bool(pdev->dev.of_node,
 						"qcom,partial-update-enabled");
 	if (partial_update_enabled) {
@@ -1400,6 +1396,15 @@ static int __devinit mdss_dsi_panel_probe(struct platform_device *pdev)
 		vendor_pdata.panel_info.partial_update_enabled = 0;
 		vendor_pdata.partial_update_fnc = NULL;
 	}
+
+	vendor_pdata.panel_info.ulps_feature_enabled = of_property_read_bool(
+		pdev->dev.of_node, "qcom,ulps-enabled");
+	pr_info("%s: ulps feature %s", __func__,
+		(vendor_pdata.panel_info.ulps_feature_enabled ? "enabled" : "disabled"));
+
+	vendor_pdata.on = mdss_dsi_panel_on;
+	vendor_pdata.off = mdss_dsi_panel_off;
+	vendor_pdata.bl_fnc = mdss_dsi_panel_bl_ctrl;
 
 	rc = dsi_panel_device_register(pdev, &vendor_pdata);
 	if (rc)
