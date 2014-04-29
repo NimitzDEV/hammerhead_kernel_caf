@@ -198,6 +198,10 @@ struct msm_fb_data_type {
 
 	u32 dcm_state;
 	struct list_head proc_list;
+ 
+	struct ion_client *fb_ion_client;
+	struct ion_handle *fb_ion_handle;
+
 	bool wait_for_kickoff;
 };
 
