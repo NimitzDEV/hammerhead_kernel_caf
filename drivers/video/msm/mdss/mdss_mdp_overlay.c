@@ -490,6 +490,7 @@ int mdss_mdp_overlay_pipe_setup(struct msm_fb_data_type *mfd,
 	} else {
 		pipe->overfetch_disable = 0;
 	}
+	pipe->bg_color = req->bg_color;
 
 	req->id = pipe->ndx;
 	pipe->req_data = *req;
