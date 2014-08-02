@@ -472,13 +472,13 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 		return ret;
 	}
 
-	mdss_dsi_clk_ctrl(ctrl_pdata, DSI_BUS_CLKS, 1);
+	ret = mdss_dsi_clk_ctrl(ctrl_pdata, DSI_BUS_CLKS, 1);
 	if (ret) {
-		pr_err("%s: failed to enable bus clocks. rc=%d\n", __func__,
+		pr_err("%s: failed to enable bus clocks. ret=%d\n", __func__,
 			ret);
 		ret = mdss_dsi_panel_power_on(pdata, 0);
 		if (ret) {
-			pr_err("%s: Panel reset failed. rc=%d\n",
+			pr_err("%s: Panel reset failed. ret=%d\n",
 					__func__, ret);
 			return ret;
 		}
