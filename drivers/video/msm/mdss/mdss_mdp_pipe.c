@@ -690,19 +690,20 @@ static void mdss_mdp_pipe_free(struct kref *kref)
 
 	pr_debug("ndx=%x pnum=%d\n", pipe->ndx, pipe->num);
 
-	if (pipe->play_cnt) {
-		mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_ON, false);
+	mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_ON, false);
+	if (pipe && pipe->play_cnt) {
 		mdss_mdp_pipe_fetch_halt(pipe);
 		mdss_mdp_pipe_sspp_term(pipe);
 		mdss_mdp_smp_free(pipe);
-		mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_OFF, false);
 	} else {
 		mdss_mdp_smp_unreserve(pipe);
 	}
+	mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_OFF, false);
 
 	pipe->flags = 0;
 	pipe->bwc_mode = 0;
 	pipe->mfd = NULL;
+	pipe->mixer = NULL;
 }
 
 static int mdss_mdp_is_pipe_idle(struct mdss_mdp_pipe *pipe,
