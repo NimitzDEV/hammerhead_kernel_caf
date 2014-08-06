@@ -1,5 +1,5 @@
 /*
- * drivers/cpufreq/cpufreq_interactive.c
+ * drivers/cpufreq/cpufreq_interactive_pro.c
  *
  * Copyright (C) 2010 Google, Inc.
  *
@@ -33,6 +33,7 @@
 #include <linux/kernel_stat.h>
 #include <asm/cputime.h>
 
+#define CREATE_TRACE_POINTS
 #include <trace/events/cpufreq_interactive.h>
 
 static int active_count;
@@ -85,11 +86,8 @@ static spinlock_t target_loads_lock;
 static unsigned int *target_loads = default_target_loads;
 static int ntarget_loads = ARRAY_SIZE(default_target_loads);
 
-/*
- * Frequency calculation threshold.  Avoid freq oscillations up to this
- * threshold and allow for dynamic changes above (default cpuinfo min).
-*/
-static unsigned long freq_calc_thresh;
+static unsigned int *target_loads_down = NULL;
+static int ntarget_loads_down = 0;
 
 /*
  * The minimum amount of time to spend at a frequency before we can ramp down.
@@ -144,6 +142,19 @@ static unsigned int sync_freq;
 static unsigned int up_threshold_any_cpu_freq;
 
 static bool use_sched_hint;
+
+static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
+		unsigned int event);
+
+#ifndef CONFIG_CPU_FREQ_DEFAULT_GOV_INTERACTIVE
+static
+#endif
+struct cpufreq_governor cpufreq_gov_interactive = {
+	.name = "interactive",
+	.governor = cpufreq_governor_interactive,
+	.max_transition_latency = 10000000,
+	.owner = THIS_MODULE,
+};
 
 /* Round to starting jiffy of next evaluation window */
 static u64 round_to_nw_start(u64 jif)
@@ -274,13 +285,32 @@ static unsigned int freq_to_targetload(unsigned int freq)
 	return ret;
 }
 
+static unsigned int freq_to_target_load_down(unsigned int freq)
+{
+	int i;
+	unsigned int ret;
+	unsigned long flags;
+
+	if (! ntarget_loads_down)
+		return freq_to_targetload(freq);
+
+	spin_lock_irqsave(&target_loads_lock, flags);
+
+	for (i = 0; i < ntarget_loads_down - 1 && freq >= target_loads_down[i+1]; i += 2)
+		;
+
+	ret = target_loads_down[i];
+	spin_unlock_irqrestore(&target_loads_lock, flags);
+	return ret;
+}
+
 /*
  * If increasing frequencies never map to a lower target load then
  * choose_freq() will find the minimum frequency that does not exceed its
  * target load given the current load.
  */
 
-static unsigned int choose_freq(
+static unsigned int choose_freq_iterative(
 	struct cpufreq_interactive_cpuinfo *pcpu, unsigned int loadadjfreq)
 {
 	unsigned int freq = pcpu->policy->cur;
@@ -365,6 +395,45 @@ static unsigned int choose_freq(
 	return freq;
 }
 
+static unsigned int find_valid_freq_l(struct cpufreq_interactive_cpuinfo *pcpu, unsigned int target)
+{
+	unsigned int index;
+
+	if (cpufreq_frequency_table_target(pcpu->policy, pcpu->freq_table,
+		    target, CPUFREQ_RELATION_L, &index))
+		return target;
+
+	return pcpu->freq_table[index].frequency;
+}
+
+static unsigned int choose_freq_up_down(
+	struct cpufreq_interactive_cpuinfo *pcpu, unsigned int loadadjfreq)
+{
+	unsigned int new_freq;
+	unsigned int cur_freq = pcpu->policy->cur;
+
+	new_freq = loadadjfreq / freq_to_targetload(cur_freq);
+	new_freq = find_valid_freq_l(pcpu, new_freq);
+	if (new_freq >= cur_freq)
+		return new_freq;
+
+	new_freq = loadadjfreq / freq_to_target_load_down(cur_freq);
+	new_freq = find_valid_freq_l(pcpu, new_freq);
+	if (new_freq < cur_freq)
+		return new_freq;
+
+	return cur_freq;
+}
+
+static unsigned int choose_freq(
+	struct cpufreq_interactive_cpuinfo *pcpu, unsigned int loadadjfreq)
+{
+	if (ntarget_loads_down)
+		return choose_freq_up_down(pcpu, loadadjfreq);
+	else
+		return choose_freq_iterative(pcpu, loadadjfreq);
+}
+
 static u64 update_load(int cpu)
 {
 	struct cpufreq_interactive_cpuinfo *pcpu = &per_cpu(cpuinfo, cpu);
@@ -414,6 +483,9 @@ static void cpufreq_interactive_timer(unsigned long data)
 	if (!pcpu->governor_enabled)
 		goto exit;
 
+	if (cpu_is_offline(data))
+		goto exit;
+
 	spin_lock_irqsave(&pcpu->load_lock, flags);
 	pcpu->last_evaluated_jiffy = get_jiffies_64();
 	now = update_load(data);
@@ -454,23 +526,17 @@ static void cpufreq_interactive_timer(unsigned long data)
 	boosted = boost_val || now < boostpulse_endtime;
 	boosted_freq = max(hispeed_freq, pcpu->policy->min);
 
-	if (cpu_load >= go_hispeed_load || boosted) {
+	if ((go_hispeed_load && cpu_load >= go_hispeed_load) || boosted) {
 		if (pcpu->target_freq < boosted_freq) {
 			new_freq = boosted_freq;
 		} else {
 			new_freq = choose_freq(pcpu, loadadjfreq);
-
-			if (new_freq > freq_calc_thresh)
-				new_freq = pcpu->policy->max * cpu_load / 100;
 
 			if (new_freq < boosted_freq)
 				new_freq = boosted_freq;
 		}
 	} else {
 		new_freq = choose_freq(pcpu, loadadjfreq);
-
-		if (new_freq > freq_calc_thresh)
-			new_freq = pcpu->policy->max * cpu_load / 100;
 
 		if (sync_freq && new_freq < sync_freq) {
 
@@ -593,16 +659,21 @@ exit:
 
 static void cpufreq_interactive_idle_start(void)
 {
-	struct cpufreq_interactive_cpuinfo *pcpu =
-		&per_cpu(cpuinfo, smp_processor_id());
+	int cpu = smp_processor_id();
+	struct cpufreq_interactive_cpuinfo *pcpu = &per_cpu(cpuinfo, cpu);
 	int pending;
 	u64 now;
 
 	if (!down_read_trylock(&pcpu->enable_sem))
 		return;
-	if (!pcpu->governor_enabled) {
-		up_read(&pcpu->enable_sem);
-		return;
+	if (!pcpu->governor_enabled)
+		goto exit;
+
+	/* Cancel the timer if cpu is offline */
+	if (cpu_is_offline(cpu)) {
+		del_timer(&pcpu->cpu_timer);
+		del_timer(&pcpu->cpu_slack_timer);
+		goto exit;
 	}
 
 	now = ktime_to_us(ktime_get());
@@ -620,7 +691,7 @@ static void cpufreq_interactive_idle_start(void)
 		 * the CPUFreq driver.
 		 */
 		if (!pending) {
-			cpufreq_interactive_timer_resched(smp_processor_id());
+			cpufreq_interactive_timer_resched(cpu);
 
 			now = ktime_to_us(ktime_get());
 			if ((pcpu->policy->cur == pcpu->policy->max) &&
@@ -632,6 +703,7 @@ static void cpufreq_interactive_idle_start(void)
 		}
 	}
 
+exit:
 	up_read(&pcpu->enable_sem);
 }
 
@@ -912,27 +984,51 @@ static struct global_attr target_loads_attr =
 	__ATTR(target_loads, S_IRUGO | S_IWUSR,
 		show_target_loads, store_target_loads);
 
-static ssize_t show_freq_calc_thresh(struct kobject *kobj,
-				     struct attribute *attr, char *buf)
+static ssize_t show_target_loads_down(
+	struct kobject *kobj, struct attribute *attr, char *buf)
 {
-	return sprintf(buf, "%lu\n", freq_calc_thresh);
+	int i;
+	ssize_t ret = 0;
+	unsigned long flags;
+
+	spin_lock_irqsave(&target_loads_lock, flags);
+
+	for (i = 0; i < ntarget_loads_down; i++)
+		ret += sprintf(buf + ret, "%u%s", target_loads_down[i],
+			       i & 0x1 ? ":" : " ");
+
+	if (ret)
+		ret--;	/* remove trailing space */
+
+	sprintf(buf + ret, "\n");
+	spin_unlock_irqrestore(&target_loads_lock, flags);
+	return ret;
 }
 
-static ssize_t store_freq_calc_thresh(struct kobject *kobj,
-			struct attribute *attr, const char *buf, size_t count)
+static ssize_t store_target_loads_down(
+	struct kobject *kobj, struct attribute *attr, const char *buf,
+	size_t count)
 {
-	int ret;
-	unsigned long val;
+	int ntokens;
+	unsigned int *new_target_loads_down = NULL;
+	unsigned long flags;
 
-	ret = strict_strtoul(buf, 0, &val);
-	if (ret < 0)
-		return ret;
-	freq_calc_thresh = val;
+	new_target_loads_down = get_tokenized_data(buf, &ntokens);
+	if (IS_ERR(new_target_loads_down))
+		return PTR_RET(new_target_loads_down);
+
+	spin_lock_irqsave(&target_loads_lock, flags);
+	if (target_loads_down)
+		kfree(target_loads_down);
+	target_loads_down = new_target_loads_down;
+	ntarget_loads_down = ntokens;
+	spin_unlock_irqrestore(&target_loads_lock, flags);
 	return count;
 }
 
-static struct global_attr freq_calc_thresh_attr = __ATTR(freq_calc_thresh, 0644,
-		show_freq_calc_thresh, store_freq_calc_thresh);
+static struct global_attr target_loads_down_attr =
+	__ATTR(target_loads_down, S_IRUGO | S_IWUSR,
+		show_target_loads_down, store_target_loads_down);
 
 static ssize_t show_above_hispeed_delay(
 	struct kobject *kobj, struct attribute *attr, char *buf)
@@ -1137,6 +1233,7 @@ static ssize_t store_boost(struct kobject *kobj, struct attribute *attr,
 		trace_cpufreq_interactive_boost("on");
 		cpufreq_interactive_boost();
 	} else {
+		boostpulse_endtime = ktime_to_us(ktime_get());
 		trace_cpufreq_interactive_unboost("off");
 	}
 
@@ -1282,7 +1379,7 @@ static struct global_attr up_threshold_any_cpu_freq_attr =
 
 static struct attribute *interactive_attributes[] = {
 	&target_loads_attr.attr,
-	&freq_calc_thresh_attr.attr,
+	&target_loads_down_attr.attr,
 	&above_hispeed_delay_attr.attr,
 	&hispeed_freq_attr.attr,
 	&go_hispeed_load_attr.attr,
@@ -1302,7 +1399,7 @@ static struct attribute *interactive_attributes[] = {
 
 static struct attribute_group interactive_attr_group = {
 	.attrs = interactive_attributes,
-	.name = "interactive_pro",
+	.name = "interactive",
 };
 
 static int cpufreq_interactive_idle_notifier(struct notifier_block *nb,
@@ -1343,7 +1440,6 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 			cpufreq_frequency_get_table(policy->cpu);
 		if (!hispeed_freq)
 			hispeed_freq = policy->max;
-		freq_calc_thresh = policy->cpuinfo.min_freq;
 
 		for_each_cpu(j, policy->cpus) {
 			pcpu = &per_cpu(cpuinfo, j);
@@ -1360,7 +1456,8 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 			del_timer_sync(&pcpu->cpu_timer);
 			del_timer_sync(&pcpu->cpu_slack_timer);
 			pcpu->last_evaluated_jiffy = get_jiffies_64();
-			cpufreq_interactive_timer_start(j);
+			if (cpu_online(j))
+				cpufreq_interactive_timer_start(j);
 			pcpu->governor_enabled = 1;
 			up_write(&pcpu->enable_sem);
 		}
@@ -1488,16 +1585,6 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 	}
 	return 0;
 }
-
-#ifndef CONFIG_CPU_FREQ_DEFAULT_GOV_INTERACTIVE
-static
-#endif
-struct cpufreq_governor cpufreq_gov_interactive = {
-	.name = "interactive_pro",
-	.governor = cpufreq_governor_interactive,
-	.max_transition_latency = 10000000,
-	.owner = THIS_MODULE,
-};
 
 static void cpufreq_interactive_nop_timer(unsigned long data)
 {
