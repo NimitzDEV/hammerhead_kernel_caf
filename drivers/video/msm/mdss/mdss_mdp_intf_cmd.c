@@ -698,9 +698,8 @@ int mdss_mdp_cmd_stop(struct mdss_mdp_ctl *ctl)
 	}
 	spin_unlock_irqrestore(&ctx->clk_lock, flags);
 
-	hz = mdss_panel_get_framerate(&ctl->panel_data->panel_info);
-
-	if (need_wait)
+	if (need_wait) {
+		hz = mdss_panel_get_framerate(&ctl->panel_data->panel_info);
 		if (wait_for_completion_timeout(&ctx->stop_comp,
 					STOP_TIMEOUT(hz))
 		    <= 0) {
@@ -719,6 +718,7 @@ int mdss_mdp_cmd_stop(struct mdss_mdp_ctl *ctl)
 				}
 			}
 		}
+	}
 
 	if (cancel_work_sync(&ctx->clk_work))
 		pr_debug("no pending clk work\n");
